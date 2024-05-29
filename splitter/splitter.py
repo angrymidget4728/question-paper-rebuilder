@@ -22,7 +22,7 @@ class SplitQuestions:
         # Initialize primary variables
         source = fitz.open(filepath)
         paper_id_pattern = compile(r'\d{4}/\d{2}/[A-Z]/[A-Z]/\d{2}')
-        start_page, page_num_elem, paper_id_elem, q1_elem, examiner_use_elem = self.get_first_page_info(source, paper_id_pattern)
+        start_page, page_num_elem, paper_id_elem, q1_elem, examiner_use_elem = self._get_first_page_info(source, paper_id_pattern)
         # All 'elem' variables store a tuple of information about piece of text in the PDF
         # E.g.: (topLeftX, topLeftY, bottomRightX, bottomRightY, text, blockNum, lineNum, wordNum)
 
@@ -38,19 +38,25 @@ class SplitQuestions:
         qp_num_tape = scaled_to_image(page_width, [0, paper_id_elem[3]-one_line_gap, page_width, paper_id_elem[3]+one_line_gap])
         examiner_use_tape = scaled_to_image(page_width, [examiner_use_elem[0]-one_line_gap/2, 0, page_width, page_height]) if examiner_use_elem else None
 
-        white_pasties, either_or_location = self.get_white_tapes(source, start_page, page_num_tape, qp_num_tape, examiner_use_tape, page_width, page_height, one_line_gap)
+        white_pasties, either_or_location = self._get_white_tapes(source, start_page, page_num_tape, qp_num_tape, examiner_use_tape, page_width, page_height, one_line_gap)
 
         # Get list of whited out images (excluding either/or questions)
-        taped_image_list = self.get_taped_image_list(source, white_pasties)
+        self.taped_image_list = self._get_taped_image_list(source, white_pasties)
 
         # Append whited out either/or if available
-        taped_image_list = self.get_taped_either_or(source, taped_image_list, either_or_location, one_line_gap_img)
+        self.taped_image_list = self._get_taped_either_or(source, self.taped_image_list, either_or_location, one_line_gap_img)
 
-        for img in taped_image_list[::-1]:
-            Image._show(img)
+        # Get list of question line slices
+        self.sliced_image_list = self._get_sliced_image_list(self.taped_image_list, one_line_gap_img, page_width)
+
+        # Get list of stitched questions
+        self.stitched_image_list, right_bounds_image = self._get_stitched_image_list(self.sliced_image_list, page_width, q1_elem, one_line_gap_img)
+
+        # Get stitched questions with question numbers (and maybe also question paper numbers)
+        self.stitched_image_list, self.question_number_coordinates = self._paste_questions_numbers(source, start_page, page_width, self.stitched_image_list, right_bounds_image, paper_id_elem, one_line_gap_img, include_paper_id)
 
     # Find first page, store q1_elem and qnNumElem
-    def get_first_page_info(self, source, paper_id_pattern):
+    def _get_first_page_info(self, source, paper_id_pattern):
         start_page, page_num_elem, paper_id_elem, q1_elem, examiner_use_elem = None, None, None, None, None
         for page in source.pages(1):
             page_words = page.get_text('words')
@@ -66,7 +72,7 @@ class SplitQuestions:
         return start_page, page_num_elem, paper_id_elem, q1_elem, examiner_use_elem
     
     # Store all the (image) locations that need to be blocked out by white 'tapes'
-    def get_white_tapes(self, file, startPage, pageNumTape, qpNumTape, examinerUseTape, pageWidth, pageHeight, oneLineGap):
+    def _get_white_tapes(self, file, startPage, pageNumTape, qpNumTape, examinerUseTape, pageWidth, pageHeight, oneLineGap):
         whitePasties = {}
         eitherOrLoc = []
         skipRemainingPages = False
@@ -105,9 +111,8 @@ class SplitQuestions:
         
         return whitePasties, eitherOrLoc
 
-
     # Convert each page to image and 'paste' the white tapes
-    def get_taped_image_list(self, file, whitePasties):
+    def _get_taped_image_list(self, file, whitePasties):
         tapedImgList = []
         for k, v in whitePasties.items():
             pageImg = Image.open(P2B(file[k]))
@@ -118,7 +123,7 @@ class SplitQuestions:
         
         return tapedImgList
 
-    def get_taped_either_or(self, file, tapedImgList, eitherOrLoc, oneLineGapImg):
+    def _get_taped_either_or(self, file, tapedImgList, eitherOrLoc, oneLineGapImg):
         if len(eitherOrLoc) > 0:
             eitherPageImg = Image.open(P2B(file[eitherOrLoc[0][-2]]))
             eitherQuesImg = eitherPageImg.crop([0,eitherOrLoc[0][1]-oneLineGapImg*2,eitherOrLoc[0][0],eitherOrLoc[0][3]+oneLineGapImg*2])
@@ -130,3 +135,84 @@ class SplitQuestions:
             tapedImgList[eitherOrLoc[1][-1]].paste(eitherQuesImgCropped, (eitherQuesBbox[0], eitherOrLoc[1][1]+oneLineGapImg*2//10))
 
         return tapedImgList
+    
+    # Slice up each page image into question block snippets
+    def _get_sliced_image_list(self, tapedImgList, oneLineGapImg, pageWidth):
+        slicedImgList = []
+        checkHeight, pageWidthImg = int(oneLineGapImg*1.5), scaled_to_image(pageWidth, pageWidth)
+
+        for img in tapedImgList:
+            keepBox = [0,0,pageWidthImg,checkHeight]
+            pixel = 0
+            gapFoundBefore = False
+            while pixel < img.height:
+                checkBottom = pixel+checkHeight if pixel+checkHeight<img.height else img.height
+                checkBox = ImageOps.invert(img.crop([0,pixel,pageWidthImg,checkBottom])).getbbox()
+                if checkBox:
+                    if not gapFoundBefore:
+                        keepBox[3] = pixel+checkBox[3]
+                        pixel += checkBox[3]
+                    else:
+                        keepBox[1], keepBox[3] = pixel+checkBox[1], pixel+checkBox[3]
+                        gapFoundBefore = False
+                        pixel += checkBox[1]
+                else:
+                    if not gapFoundBefore:
+                        if pixel != 0 and not keepBox[3]-keepBox[1]<oneLineGapImg//2:
+                            slicedImgList.append(img.crop(keepBox))
+                        gapFoundBefore = True
+                    pixel += checkHeight
+                    keepBox[1], keepBox[3] = pixel, pixel
+            if keepBox[3]-keepBox[1] != 0:
+                slicedImgList.append(img.crop(keepBox))
+        
+        return slicedImgList
+    
+    def _get_stitched_image_list(self, slicedImgList, pageWidth, q1Elem, oneLineGapImg):
+        stitchedImgList = []
+        rBoundImg = scaled_to_image(pageWidth, q1Elem[2])
+        for img in slicedImgList:
+            potentialQuestion = ImageOps.invert(img.crop([0,0,rBoundImg,img.height])).getbbox()
+            if potentialQuestion and oneLineGapImg//3 <= potentialQuestion[3]-potentialQuestion[1] <= oneLineGapImg:
+                stitchedImgList.append(img)
+            else:
+                newImg = Image.new('L',(img.width,stitchedImgList[-1].height+oneLineGapImg), 255)
+                newImg.paste(stitchedImgList[-1])
+                stitchedImgList[-1] = newImg
+
+                newImg = Image.new('L',(img.width,stitchedImgList[-1].height+img.height), 255)
+                newImg.paste(stitchedImgList[-1])
+                newImg.paste(img,(0,stitchedImgList[-1].height))
+                stitchedImgList[-1] = newImg
+        
+        return stitchedImgList, rBoundImg
+    
+    def _paste_questions_numbers(self, file, startPage, pageWidth, stitchedImgList, rBoundImg, qpNumElem, oneLineGapImg, includeQpNum):
+        qpNumSnippet = Image.open(P2B(file[startPage])).crop(scaled_to_image(pageWidth,qpNumElem[:4]))
+        qpNumSnippet = qpNumSnippet.crop(ImageOps.invert(qpNumSnippet).getbbox())
+        qCoordsList = []
+
+        for idx, img in enumerate(stitchedImgList):
+            qNumBox = ImageOps.invert(img.crop([0,0,rBoundImg+oneLineGapImg,int(oneLineGapImg*1.2)])).getbbox()
+            qNumSnip = img.crop(qNumBox)
+
+
+            qNumTape = Image.new('L',(qNumSnip.width,qNumSnip.height),255)
+            stitchedImgList[idx].paste(qNumTape,qNumBox)
+            # stitchedImgList[idx].info['qCoords'] = ' '.join(f"{qNumBox}")
+            qCoordsList.append(qNumBox)
+
+            if includeQpNum:
+                newImg = Image.new('L',(img.width,img.height+oneLineGapImg*2), 255)
+                newImg.paste(img,(0,oneLineGapImg*2))
+                
+                newImg.paste(qpNumSnippet,(img.width-int(qpNumSnippet.width*2.5),0))
+                newImg.paste(qNumSnip,(img.width-int(qpNumSnippet.width)+oneLineGapImg//2,0))
+
+                stitchedImgList[idx] = newImg
+                # The next line is done because you paste in the QP number, then the whole question will be nudged down a peg, so it changes the coordinates of the question number
+                # stitchedImgList[idx].info['qCoords'] = ' '.join(f"{[x+oneLineGapImg*2 if j==1 else x for j, x in enumerate(qNumBox)]}")
+                qCoordsList[idx] = tuple(x+oneLineGapImg*2 if j==1 else x for j, x in enumerate(qNumBox))
+            # ic(idx, qCoordsList[idx], stitchedImgList[idx].info['qCoords'])
+        
+        return stitchedImgList, qCoordsList
