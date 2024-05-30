@@ -1,4 +1,4 @@
-import fitz
+import fitz, os
 from re import compile
 from icecream import ic
 from PIL import Image, ImageOps
@@ -18,7 +18,7 @@ def scaled_to_image(pdf_page_width, pdf_coords):
 def P2B(page): return BytesIO(page.get_pixmap(dpi=300).tobytes("png"))
 
 class SplitQuestions:
-    def __init__(self, filepath : str = source_path, include_paper_id = True):
+    def __init__(self, filepath : str = source_path, include_paper_id = False, local_source = False):
         # Initialize primary variables
         source = fitz.open(filepath)
         paper_id_pattern = compile(r'\d{4}/\d{2}/[A-Z]/[A-Z]/\d{2}')
@@ -52,8 +52,12 @@ class SplitQuestions:
         # Get list of stitched questions
         self.stitched_image_list, right_bounds_image = self._get_stitched_image_list(self.sliced_image_list, page_width, q1_elem, one_line_gap_img)
 
-        # Get stitched questions with question numbers (and maybe also question paper numbers)
+        self._save_split_images(image_list=self.stitched_image_list)
+        # Get stitched questions without question numbers (and maybe also include question paper numbers)
         self.stitched_image_list, self.question_number_coordinates = self._paste_questions_numbers(source, start_page, page_width, self.stitched_image_list, right_bounds_image, paper_id_elem, one_line_gap_img, include_paper_id)
+
+        # filename = self._get_filename(filepath)
+
 
     # Find first page, store q1_elem and qnNumElem
     def _get_first_page_info(self, source, paper_id_pattern):
@@ -216,3 +220,16 @@ class SplitQuestions:
             # ic(idx, qCoordsList[idx], stitchedImgList[idx].info['qCoords'])
         
         return stitchedImgList, qCoordsList
+    
+    def _save_split_images(self, filename="4037_w12_qp_12.pdf", image_list=None):
+        file_name = os.path.splitext(filename)[0]
+        if not os.path.exists("exports"):
+            os.makedirs("exports/questions")
+            os.makedirs("exports/question_ids")
+        for idx, img in enumerate(image_list):
+            save_name = f"{file_name}_{idx}.png"
+            img.save(f"exports/questions/{save_name}")
+
+
+if __name__ == "__main__":
+    boii = SplitQuestions()
