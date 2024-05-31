@@ -5,9 +5,15 @@
 - [ ] Segment already done code for modularity, scalability and testability
     - [ ] Main code
         - [x] Generate taped images
-        - [ ] Generate sliced images
-        - [ ] Generate stitched slices
-        - [ ] Save to storage
+        - [x] Generate sliced images
+        - [x] Generate stitched slices
+        - [x] Save to storage (with correct file naming)
+        - [ ] Fix question number taping
         - [ ] Save info to db
     - [ ] GUI code
+        - [x] Builder screen
+        - [x] Builder screen selection function
+        - [ ] Splitter screen
+        - [ ] ...
+    - [ ] Global database
         - [ ] ...
