@@ -8,7 +8,7 @@
         - [x] Generate sliced images
         - [x] Generate stitched slices
         - [x] Save to storage (with correct file naming)
-        - [ ] Fix question number taping
+        - [ ] Fix question number taping + keep strip of paper id separate
         - [ ] Save info to db
     - [ ] GUI code
         - [x] Builder screen

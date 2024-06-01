@@ -18,7 +18,7 @@ def scaled_to_image(pdf_page_width, pdf_coords):
 def P2B(page): return BytesIO(page.get_pixmap(dpi=300).tobytes("png"))
 
 class SplitQuestions:
-    def __init__(self, filepath : str = source_path, include_paper_id = False, local_source = True):
+    def __init__(self, filepath : str = source_path, local_source = True):
         # Assuming PDF is in local storage
         file_name = ""
         if local_source:
@@ -60,10 +60,10 @@ class SplitQuestions:
         self.stitched_image_list, right_bounds_image = self._get_stitched_image_list(self.sliced_image_list, page_width, q1_elem, one_line_gap_img)
 
         # Get stitched questions without question numbers (and maybe also include question paper numbers)
-        self.stitched_image_list, self.question_number_coordinates = self._paste_questions_numbers(source, start_page, page_width, self.stitched_image_list, right_bounds_image, paper_id_elem, one_line_gap_img, include_paper_id)
+        self.stitched_image_list, self.question_number_coordinates, self.paper_id_strips = self._remove_questions_numbers(source, start_page, page_width, self.stitched_image_list, right_bounds_image, paper_id_elem, one_line_gap_img, len(either_or_location))
 
         # Save images
-        self._save_split_images(file_name, self.stitched_image_list, len(either_or_location))
+        self._save_split_images(file_name, self.stitched_image_list, self.paper_id_strips, len(either_or_location))
 
 
     # Find first page, store q1_elem and qnNumElem
@@ -198,50 +198,59 @@ class SplitQuestions:
         
         return stitchedImgList, rBoundImg
     
-    def _paste_questions_numbers(self, file, startPage, pageWidth, stitchedImgList, rBoundImg, qpNumElem, oneLineGapImg, includeQpNum):
-        qpNumSnippet = Image.open(P2B(file[startPage])).crop(scaled_to_image(pageWidth,qpNumElem[:4]))
-        qpNumSnippet = qpNumSnippet.crop(ImageOps.invert(qpNumSnippet).getbbox())
+    def _remove_questions_numbers(self, file, startPage, pageWidth, stitchedImgList, rBoundImg, qpNumElem, oneLineGapImg, eitherOrExists=0):
         qCoordsList = []
+        paperIdStrips = []
+        whiteTape = Image.new('L', (rBoundImg+oneLineGapImg, int(oneLineGapImg*1.5)), 255)
+        pageWidthImg = scaled_to_image(pageWidth, pageWidth)
+
+        # Grab Paper ID
+        paperIdGrabbedBlock = Image.open(P2B(file[startPage])).crop(scaled_to_image(pageWidth, qpNumElem[:4]))
 
         for idx, img in enumerate(stitchedImgList):
-            qNumBox = ImageOps.invert(img.crop([0,0,rBoundImg+oneLineGapImg,int(oneLineGapImg*1.2)])).getbbox()
-            qNumSnip = img.crop(qNumBox)
+            # Grab Question Number
+            croppedQuestionNum = img.crop((0, 0, rBoundImg+oneLineGapImg, int(oneLineGapImg*1.5)))
+            croppedBoundBox = ImageOps.invert(croppedQuestionNum).getbbox()
+            qCoordsList.append(croppedBoundBox)
 
+            # Append question number to paper ID
+            longStrip = Image.new('L', (pageWidthImg, oneLineGapImg*2), 255)
+            longStrip.paste(croppedQuestionNum.crop(croppedBoundBox), (pageWidthImg-oneLineGapImg*2, int(oneLineGapImg*0.5)))
+            longStrip.paste(paperIdGrabbedBlock, (pageWidthImg-oneLineGapImg*3-paperIdGrabbedBlock.width, int(oneLineGapImg*0.5)))
 
-            qNumTape = Image.new('L',(qNumSnip.width,qNumSnip.height),255)
-            stitchedImgList[idx].paste(qNumTape,qNumBox)
-            # stitchedImgList[idx].info['qCoords'] = ' '.join(f"{qNumBox}")
-            qCoordsList.append(qNumBox)
+            # Hide question number
+            img.paste(whiteTape)
 
-            if includeQpNum:
-                newImg = Image.new('L',(img.width,img.height+oneLineGapImg*2), 255)
-                newImg.paste(img,(0,oneLineGapImg*2))
-                
-                newImg.paste(qpNumSnippet,(img.width-int(qpNumSnippet.width*2.5),0))
-                newImg.paste(qNumSnip,(img.width-int(qpNumSnippet.width)+oneLineGapImg//2,0))
+            # Handle Either/Or
+            if idx >= len(stitchedImgList)-2 and eitherOrExists > 0:
+                eitherOrPart = img.crop((0, 0, pageWidthImg//2, oneLineGapImg))
+                eitherOrPart = eitherOrPart.crop(ImageOps.invert(eitherOrPart).getbbox())
+                longStrip.paste(eitherOrPart, (pageWidthImg-oneLineGapImg*4-paperIdGrabbedBlock.width-eitherOrPart.width, int(oneLineGapImg*0.5)))
+                # longStrip.save(f"boss{idx}.png")
 
-                stitchedImgList[idx] = newImg
-                # The next line is done because you paste in the QP number, then the whole question will be nudged down a peg, so it changes the coordinates of the question number
-                # stitchedImgList[idx].info['qCoords'] = ' '.join(f"{[x+oneLineGapImg*2 if j==1 else x for j, x in enumerate(qNumBox)]}")
-                qCoordsList[idx] = tuple(x+oneLineGapImg*2 if j==1 else x for j, x in enumerate(qNumBox))
-            # ic(idx, qCoordsList[idx], stitchedImgList[idx].info['qCoords'])
+                questionPart = img.crop((0, oneLineGapImg, pageWidthImg, img.height))
+                questionPart = questionPart.crop(ImageOps.invert(questionPart).getbbox())
+                stitchedImgList[idx] = questionPart
+
+            paperIdStrips.append(longStrip)
         
-        return stitchedImgList, qCoordsList
+        return stitchedImgList, qCoordsList, paperIdStrips
     
-    def _save_split_images(self, filename="4037_w12_qp_12.pdf", image_list=None, eitherOrExists=0):
-        file_name = os.path.splitext(filename)[0]
+    def _save_split_images(self, filename, image_list, strip_list, eitherOrExists=0):
+        # filename = os.path.splitext(filename)[0]
         if not os.path.exists("exports"):
             os.makedirs("exports/questions")
             os.makedirs("exports/question_ids")
-        for idx, img in enumerate(image_list):
+        for idx, (img, strip) in enumerate(zip(image_list, strip_list)):
             save_name = ""
             if idx < len(image_list)-2:
-                save_name = f"{file_name}_{idx+1}.png"
+                save_name = f"{filename}_{idx+1}.png"
             else:
                 if eitherOrExists > 0:
-                    save_name = f"{file_name}_{idx+1}E.png" if idx == len(image_list)-2 else f"{file_name}_{idx}O.png"
+                    save_name = f"{filename}_{idx+1}E.png" if idx == len(image_list)-2 else f"{filename}_{idx}O.png"
 
             img.save(f"exports/questions/{save_name}")
+            strip.save(f"exports/question_ids/{save_name}")
 
 
 
